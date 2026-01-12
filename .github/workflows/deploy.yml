@@ -2,7 +2,7 @@ name: Deploy to GitHub Pages
 
 on:
   push:
-    branches: [main]
+    branches: [main, claude/fix-link-music-integrations-LQxZM]
   workflow_dispatch:
 
 permissions:
