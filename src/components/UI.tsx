@@ -1,13 +1,21 @@
-import { useState, useRef, useCallback } from 'react'
+import { useState, useRef, useCallback, useEffect } from 'react'
 import { useAudioStore } from '../stores/audioStore'
+import { useSpotifyStore, getSpotifyAuthUrl, initSpotifyAuth } from '../stores/spotifyStore'
+import { useAppleMusicStore, getStoredAppleMusicToken } from '../stores/appleMusicStore'
 
-type InputMode = 'file' | 'youtube'
+type InputMode = 'file' | 'youtube' | 'spotify' | 'apple'
 
 export function UI() {
   const [isDragging, setIsDragging] = useState(false)
   const [inputMode, setInputMode] = useState<InputMode>('file')
   const [youtubeUrl, setYoutubeUrl] = useState('')
   const [isLoadingYoutube, setIsLoadingYoutube] = useState(false)
+  const [spotifyClientId, setSpotifyClientId] = useState('')
+  const [spotifySearch, setSpotifySearch] = useState('')
+  const [spotifyResults, setSpotifyResults] = useState<Awaited<ReturnType<typeof spotifyStore.searchTracks>>>([])
+  const [appleDeveloperToken, setAppleDeveloperToken] = useState('')
+  const [appleSearch, setAppleSearch] = useState('')
+  const [appleResults, setAppleResults] = useState<Awaited<ReturnType<typeof appleMusicStore.searchTracks>>>([])
   const fileInputRef = useRef<HTMLInputElement>(null)
 
   const {
@@ -22,6 +30,29 @@ export function UI() {
     toggle,
     setError,
   } = useAudioStore()
+
+  const spotifyStore = useSpotifyStore()
+  const appleMusicStore = useAppleMusicStore()
+
+  // Initialize Spotify from stored token or OAuth callback
+  useEffect(() => {
+    const token = initSpotifyAuth()
+    if (token) {
+      spotifyStore.setAccessToken(token)
+      spotifyStore.initializeSDK().then(() => {
+        spotifyStore.connect()
+      })
+    }
+  }, [])
+
+  // Initialize Apple Music from stored token
+  useEffect(() => {
+    const token = getStoredAppleMusicToken()
+    if (token) {
+      setAppleDeveloperToken(token)
+      appleMusicStore.initializeSDK(token)
+    }
+  }, [])
 
   const handleFileSelect = useCallback(async (file: File) => {
     if (!file.type.startsWith('audio/')) {
@@ -129,7 +160,54 @@ export function UI() {
     }
   }, [youtubeUrl, isInitialized, initAudio, loadAudio, setError])
 
-  const showLoadingState = isLoading || isLoadingYoutube
+  // Spotify handlers
+  const handleSpotifyAuth = useCallback(() => {
+    if (!spotifyClientId.trim()) {
+      setError('Please enter your Spotify Client ID')
+      return
+    }
+    const redirectUri = window.location.origin + window.location.pathname
+    const authUrl = getSpotifyAuthUrl(spotifyClientId, redirectUri)
+    localStorage.setItem('spotify_client_id', spotifyClientId)
+    window.location.href = authUrl
+  }, [spotifyClientId, setError])
+
+  const handleSpotifySearch = useCallback(async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!spotifySearch.trim()) return
+    const results = await spotifyStore.searchTracks(spotifySearch)
+    setSpotifyResults(results)
+  }, [spotifySearch, spotifyStore])
+
+  const handleSpotifyPlay = useCallback(async (uri: string, name: string) => {
+    await spotifyStore.play(uri)
+    useAudioStore.setState({ currentTrack: `Spotify: ${name}` })
+  }, [spotifyStore])
+
+  // Apple Music handlers
+  const handleAppleMusicInit = useCallback(async () => {
+    if (!appleDeveloperToken.trim()) {
+      setError('Please enter your Apple Music Developer Token')
+      return
+    }
+    await appleMusicStore.initializeSDK(appleDeveloperToken)
+    await appleMusicStore.authorize()
+  }, [appleDeveloperToken, appleMusicStore, setError])
+
+  const handleAppleSearch = useCallback(async (e: React.FormEvent) => {
+    e.preventDefault()
+    if (!appleSearch.trim()) return
+    const results = await appleMusicStore.searchTracks(appleSearch)
+    setAppleResults(results)
+  }, [appleSearch, appleMusicStore])
+
+  const handleApplePlay = useCallback(async (songId: string, name: string) => {
+    await appleMusicStore.play(songId)
+    useAudioStore.setState({ currentTrack: `Apple Music: ${name}` })
+  }, [appleMusicStore])
+
+  const showLoadingState = isLoading || isLoadingYoutube || spotifyStore.isConnecting || appleMusicStore.isConnecting
+  const combinedError = error || spotifyStore.error || appleMusicStore.error
 
   return (
     <div className="fixed inset-0 pointer-events-none z-10">
@@ -165,26 +243,46 @@ export function UI() {
         >
           <div className="glass rounded-3xl p-8 text-center pointer-events-auto glow-border fade-in max-w-md w-full mx-4">
             {/* Mode tabs */}
-            <div className="flex mb-6 bg-white/5 rounded-full p-1">
+            <div className="flex flex-wrap mb-6 bg-white/5 rounded-2xl p-1 gap-1">
               <button
                 onClick={() => setInputMode('file')}
-                className={`flex-1 py-2 px-4 rounded-full text-sm font-medium transition-all ${
+                className={`flex-1 min-w-[80px] py-2 px-3 rounded-xl text-xs font-medium transition-all ${
                   inputMode === 'file'
                     ? 'bg-gradient-to-r from-cosmic-purple to-cosmic-pink text-white'
                     : 'text-white/50 hover:text-white/70'
                 }`}
               >
-                Local File
+                File
               </button>
               <button
                 onClick={() => setInputMode('youtube')}
-                className={`flex-1 py-2 px-4 rounded-full text-sm font-medium transition-all ${
+                className={`flex-1 min-w-[80px] py-2 px-3 rounded-xl text-xs font-medium transition-all ${
                   inputMode === 'youtube'
-                    ? 'bg-gradient-to-r from-cosmic-purple to-cosmic-pink text-white'
+                    ? 'bg-gradient-to-r from-red-500 to-red-600 text-white'
                     : 'text-white/50 hover:text-white/70'
                 }`}
               >
                 YouTube
+              </button>
+              <button
+                onClick={() => setInputMode('spotify')}
+                className={`flex-1 min-w-[80px] py-2 px-3 rounded-xl text-xs font-medium transition-all ${
+                  inputMode === 'spotify'
+                    ? 'bg-gradient-to-r from-green-500 to-green-600 text-white'
+                    : 'text-white/50 hover:text-white/70'
+                }`}
+              >
+                Spotify
+              </button>
+              <button
+                onClick={() => setInputMode('apple')}
+                className={`flex-1 min-w-[80px] py-2 px-3 rounded-xl text-xs font-medium transition-all ${
+                  inputMode === 'apple'
+                    ? 'bg-gradient-to-r from-pink-500 to-red-500 text-white'
+                    : 'text-white/50 hover:text-white/70'
+                }`}
+              >
+                Apple
               </button>
             </div>
 
@@ -235,7 +333,7 @@ export function UI() {
                   className="hidden"
                 />
               </div>
-            ) : (
+            ) : inputMode === 'youtube' ? (
               /* YouTube mode */
               <div>
                 <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-gradient-to-br from-red-500 to-cosmic-pink flex items-center justify-center">
@@ -263,7 +361,7 @@ export function UI() {
                   <button
                     type="submit"
                     disabled={!youtubeUrl.trim()}
-                    className="w-full py-3 bg-gradient-to-r from-cosmic-purple to-cosmic-pink
+                    className="w-full py-3 bg-gradient-to-r from-red-500 to-red-600
                       rounded-xl font-medium text-white transition-all
                       hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
                   >
@@ -272,8 +370,214 @@ export function UI() {
                 </form>
 
                 <p className="text-xs text-white/30 mt-4">
-                  Audio is extracted server-side for playback
+                  Note: YouTube extraction may be temporarily unavailable
                 </p>
+              </div>
+            ) : inputMode === 'spotify' ? (
+              /* Spotify mode */
+              <div>
+                <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-gradient-to-br from-green-500 to-green-600 flex items-center justify-center">
+                  <svg
+                    className="w-8 h-8 text-white"
+                    fill="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path d="M12 0C5.4 0 0 5.4 0 12s5.4 12 12 12 12-5.4 12-12S18.66 0 12 0zm5.521 17.34c-.24.359-.66.48-1.021.24-2.82-1.74-6.36-2.101-10.561-1.141-.418.122-.779-.179-.899-.539-.12-.421.18-.78.54-.9 4.56-1.021 8.52-.6 11.64 1.32.42.18.479.659.301 1.02zm1.44-3.3c-.301.42-.841.6-1.262.3-3.239-1.98-8.159-2.58-11.939-1.38-.479.12-1.02-.12-1.14-.6-.12-.48.12-1.021.6-1.141C9.6 9.9 15 10.561 18.72 12.84c.361.181.54.78.241 1.2zm.12-3.36C15.24 8.4 8.82 8.16 5.16 9.301c-.6.179-1.2-.181-1.38-.721-.18-.601.18-1.2.72-1.381 4.26-1.26 11.28-1.02 15.721 1.621.539.3.719 1.02.419 1.56-.299.421-1.02.599-1.559.3z"/>
+                  </svg>
+                </div>
+
+                {!spotifyStore.isAuthenticated ? (
+                  <div>
+                    <h2 className="text-lg font-medium mb-2">Connect to Spotify</h2>
+                    <p className="text-xs text-white/50 mb-4">Requires Spotify Premium</p>
+
+                    <div className="space-y-4">
+                      <input
+                        type="text"
+                        value={spotifyClientId}
+                        onChange={(e) => setSpotifyClientId(e.target.value)}
+                        placeholder="Spotify Client ID"
+                        className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl
+                          text-white placeholder-white/30 focus:outline-none focus:border-green-500/50
+                          transition-colors text-sm"
+                      />
+                      <button
+                        onClick={handleSpotifyAuth}
+                        disabled={!spotifyClientId.trim()}
+                        className="w-full py-3 bg-gradient-to-r from-green-500 to-green-600
+                          rounded-xl font-medium text-white transition-all
+                          hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        Connect with Spotify
+                      </button>
+                    </div>
+
+                    <p className="text-xs text-white/30 mt-4">
+                      Get your Client ID from{' '}
+                      <a
+                        href="https://developer.spotify.com/dashboard"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-green-400 hover:underline"
+                      >
+                        Spotify Developer Dashboard
+                      </a>
+                    </p>
+                  </div>
+                ) : (
+                  <div>
+                    <h2 className="text-lg font-medium mb-4">Search Spotify</h2>
+
+                    <form onSubmit={handleSpotifySearch} className="space-y-4">
+                      <input
+                        type="text"
+                        value={spotifySearch}
+                        onChange={(e) => setSpotifySearch(e.target.value)}
+                        placeholder="Search for songs..."
+                        className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl
+                          text-white placeholder-white/30 focus:outline-none focus:border-green-500/50
+                          transition-colors"
+                      />
+                      <button
+                        type="submit"
+                        disabled={!spotifySearch.trim()}
+                        className="w-full py-3 bg-gradient-to-r from-green-500 to-green-600
+                          rounded-xl font-medium text-white transition-all
+                          hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        Search
+                      </button>
+                    </form>
+
+                    {spotifyResults.length > 0 && (
+                      <div className="mt-4 max-h-48 overflow-y-auto space-y-2">
+                        {spotifyResults.map((track) => (
+                          <button
+                            key={track.id}
+                            onClick={() => handleSpotifyPlay(track.uri, track.name)}
+                            className="w-full flex items-center gap-3 p-2 bg-white/5 rounded-lg
+                              hover:bg-white/10 transition-colors text-left"
+                          >
+                            {track.albumArt && (
+                              <img
+                                src={track.albumArt}
+                                alt={track.album}
+                                className="w-10 h-10 rounded"
+                              />
+                            )}
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm text-white truncate">{track.name}</p>
+                              <p className="text-xs text-white/50 truncate">{track.artists}</p>
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            ) : (
+              /* Apple Music mode */
+              <div>
+                <div className="w-16 h-16 mx-auto mb-4 rounded-full bg-gradient-to-br from-pink-500 to-red-500 flex items-center justify-center">
+                  <svg
+                    className="w-8 h-8 text-white"
+                    fill="currentColor"
+                    viewBox="0 0 24 24"
+                  >
+                    <path d="M23.994 6.124a9.23 9.23 0 0 0-.24-2.19c-.317-1.31-1.062-2.31-2.18-3.043a5.022 5.022 0 0 0-1.877-.726 10.496 10.496 0 0 0-1.564-.15c-.04-.003-.083-.01-.124-.013H5.986c-.152.01-.303.017-.455.026-.747.043-1.49.123-2.193.4-1.336.53-2.3 1.452-2.865 2.78-.192.448-.292.925-.363 1.408-.056.392-.088.785-.1 1.18 0 .032-.007.062-.01.093v12.223c.01.14.017.283.027.424.05.815.154 1.624.497 2.373.65 1.42 1.738 2.353 3.234 2.801.42.127.856.187 1.293.228.555.053 1.11.06 1.667.06h11.03a12.5 12.5 0 0 0 1.57-.1c.822-.106 1.596-.35 2.295-.81a5.046 5.046 0 0 0 1.88-2.207c.186-.42.293-.87.37-1.324.113-.675.138-1.358.137-2.04-.002-3.8 0-7.595-.003-11.393zm-6.423 3.99v5.712c0 .417-.058.827-.244 1.206-.29.59-.76.962-1.388 1.14-.35.1-.706.157-1.07.173-.95.042-1.8-.228-2.403-.96-.63-.767-.727-1.66-.457-2.6.326-1.13 1.168-1.77 2.27-2.03.39-.092.79-.126 1.19-.168.364-.04.73-.073 1.096-.12.186-.024.357-.083.442-.27.05-.11.072-.235.072-.358V7.03c0-.095-.023-.18-.1-.253-.08-.074-.17-.093-.27-.072L10.6 7.632c-.06.014-.12.035-.173.067-.1.058-.144.15-.155.262-.012.12-.013.24-.013.36v9.33c0 .39-.046.775-.208 1.135-.29.643-.793 1.044-1.476 1.24-.344.1-.695.158-1.053.18-1.137.07-2.1-.3-2.697-1.202-.443-.672-.543-1.423-.363-2.215.26-1.142 1.03-1.836 2.105-2.156.406-.12.823-.177 1.245-.218.394-.038.79-.072 1.182-.123.21-.028.395-.105.48-.32.043-.11.06-.23.06-.35V4.5c0-.13.015-.26.047-.39.066-.27.22-.465.48-.572.252-.106.513-.143.78-.18L17.633 2.4c.117-.015.235-.03.353-.035.21-.01.39.048.523.232.073.102.102.22.105.35.003.11 0 .22 0 .33v7.825l.003.012z"/>
+                  </svg>
+                </div>
+
+                {!appleMusicStore.isAuthenticated ? (
+                  <div>
+                    <h2 className="text-lg font-medium mb-2">Connect to Apple Music</h2>
+                    <p className="text-xs text-white/50 mb-4">Requires Apple Music subscription</p>
+
+                    <div className="space-y-4">
+                      <textarea
+                        value={appleDeveloperToken}
+                        onChange={(e) => setAppleDeveloperToken(e.target.value)}
+                        placeholder="Apple Music Developer Token (JWT)"
+                        rows={3}
+                        className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl
+                          text-white placeholder-white/30 focus:outline-none focus:border-pink-500/50
+                          transition-colors text-sm resize-none"
+                      />
+                      <button
+                        onClick={handleAppleMusicInit}
+                        disabled={!appleDeveloperToken.trim()}
+                        className="w-full py-3 bg-gradient-to-r from-pink-500 to-red-500
+                          rounded-xl font-medium text-white transition-all
+                          hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        Connect with Apple Music
+                      </button>
+                    </div>
+
+                    <p className="text-xs text-white/30 mt-4">
+                      Get your Developer Token from{' '}
+                      <a
+                        href="https://developer.apple.com/musickit/"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="text-pink-400 hover:underline"
+                      >
+                        Apple MusicKit
+                      </a>
+                    </p>
+                  </div>
+                ) : (
+                  <div>
+                    <h2 className="text-lg font-medium mb-4">Search Apple Music</h2>
+
+                    <form onSubmit={handleAppleSearch} className="space-y-4">
+                      <input
+                        type="text"
+                        value={appleSearch}
+                        onChange={(e) => setAppleSearch(e.target.value)}
+                        placeholder="Search for songs..."
+                        className="w-full px-4 py-3 bg-white/5 border border-white/10 rounded-xl
+                          text-white placeholder-white/30 focus:outline-none focus:border-pink-500/50
+                          transition-colors"
+                      />
+                      <button
+                        type="submit"
+                        disabled={!appleSearch.trim()}
+                        className="w-full py-3 bg-gradient-to-r from-pink-500 to-red-500
+                          rounded-xl font-medium text-white transition-all
+                          hover:opacity-90 disabled:opacity-50 disabled:cursor-not-allowed"
+                      >
+                        Search
+                      </button>
+                    </form>
+
+                    {appleResults.length > 0 && (
+                      <div className="mt-4 max-h-48 overflow-y-auto space-y-2">
+                        {appleResults.map((track) => (
+                          <button
+                            key={track.id}
+                            onClick={() => handleApplePlay(track.id, track.name)}
+                            className="w-full flex items-center gap-3 p-2 bg-white/5 rounded-lg
+                              hover:bg-white/10 transition-colors text-left"
+                          >
+                            {track.albumArt && (
+                              <img
+                                src={track.albumArt}
+                                alt={track.album}
+                                className="w-10 h-10 rounded"
+                              />
+                            )}
+                            <div className="flex-1 min-w-0">
+                              <p className="text-sm text-white truncate">{track.name}</p>
+                              <p className="text-xs text-white/50 truncate">{track.artists}</p>
+                            </div>
+                          </button>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
               </div>
             )}
           </div>
@@ -293,11 +597,15 @@ export function UI() {
       )}
 
       {/* Error display */}
-      {error && (
-        <div className="absolute top-24 left-1/2 -translate-x-1/2 glass rounded-xl px-6 py-3 border border-red-500/30 fade-in pointer-events-auto">
-          <p className="text-red-400 text-sm">{error}</p>
+      {combinedError && (
+        <div className="absolute top-24 left-1/2 -translate-x-1/2 glass rounded-xl px-6 py-3 border border-red-500/30 fade-in pointer-events-auto max-w-md">
+          <p className="text-red-400 text-sm">{combinedError}</p>
           <button
-            onClick={() => setError(null)}
+            onClick={() => {
+              setError(null)
+              spotifyStore.setError(null)
+              appleMusicStore.setError(null)
+            }}
             className="absolute -top-2 -right-2 w-6 h-6 bg-red-500/20 rounded-full text-red-400 text-xs hover:bg-red-500/30"
           >
             ×
