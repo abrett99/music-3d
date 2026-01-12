@@ -123,23 +123,70 @@ export function UI() {
     setError(null)
 
     try {
-      // Call our API endpoint
-      const apiUrl = import.meta.env.PROD
-        ? '/api/youtube'
-        : 'http://localhost:3001/api/youtube' // For local dev with separate API server
+      // Try multiple cobalt instances for redundancy
+      const cobaltInstances = [
+        'https://api.cobalt.tools',
+        'https://cobalt-api.kwiatekmiki.com',
+        'https://cobalt.api.timelessnesses.me',
+      ]
 
-      const response = await fetch(apiUrl, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({ url: youtubeUrl }),
-      })
+      let audioUrl: string | null = null
+      let lastError: string = 'All extraction services failed'
 
-      const data = await response.json()
+      // First, try our serverless API if available (works on Vercel)
+      if (window.location.hostname !== 'localhost') {
+        try {
+          const apiResponse = await fetch('/api/youtube', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ url: youtubeUrl }),
+          })
 
-      if (!response.ok || data.error) {
-        throw new Error(data.error || 'Failed to extract audio')
+          if (apiResponse.ok) {
+            const apiData = await apiResponse.json()
+            if (apiData.success && apiData.audioUrl) {
+              audioUrl = apiData.audioUrl
+            }
+          }
+        } catch {
+          // Serverless API not available (e.g., on GitHub Pages), continue to direct API calls
+        }
+      }
+
+      // If serverless API didn't work, try cobalt instances directly
+      if (!audioUrl) {
+        for (const instance of cobaltInstances) {
+          try {
+            const response = await fetch(instance, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Accept': 'application/json',
+              },
+              body: JSON.stringify({
+                url: youtubeUrl,
+                downloadMode: 'audio',
+                audioFormat: 'mp3',
+                audioBitrate: '128',
+              }),
+            })
+
+            if (response.ok) {
+              const data = await response.json()
+              if (data.url || data.audio) {
+                audioUrl = data.url || data.audio
+                break
+              }
+            }
+          } catch (err) {
+            lastError = err instanceof Error ? err.message : 'Request failed'
+            // Continue to next instance
+          }
+        }
+      }
+
+      if (!audioUrl) {
+        throw new Error(`YouTube extraction is currently unavailable. ${lastError}. Please try using a local file, Spotify, or Apple Music instead.`)
       }
 
       if (!isInitialized) {
@@ -147,7 +194,7 @@ export function UI() {
       }
 
       // Load the audio URL
-      await loadAudio(data.audioUrl)
+      await loadAudio(audioUrl)
 
       // Extract video title from URL for display
       const videoId = youtubeUrl.match(/(?:v=|youtu\.be\/)([^&?]+)/)?.[1]
